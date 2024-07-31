@@ -1,5 +1,27 @@
 # Version 1.10.0-beta
 
+## 1.10.0-beta.7
+
+- Added support for [inline value classes](https://kotlinlang.org/docs/inline-classes.html) in Kotlin - [#182](https://github.com/1Password/typeshare/pull/182)
+- Added the ability to specify that a struct should have information redacted - [#170](https://github.com/1Password/typeshare/pull/170)
+  - What this means is language-specific. In Kotlin, the toString method is overridden
+  - This was actually added in 1.10.0-beta.4 but went unannounced.
+- Made the output deterministic (this broke in 1.10.0-beta.6) - [#185](https://github.com/1Password/typeshare/pull/185)
+- Algebraic Enum Variant names are now capitalized appropriately - [#183](https://github.com/1Password/typeshare/pull/183)
+
+## 1.10.0-beta.6
+
+- Added support for skipping fields/variants via the `target_os` argument [#176](https://github.com/1Password/typeshare/pull/176)
+
+## 1.10.0-beta.5
+
+- Added support for Swift generic constraints via `#[typeshare(swiftGenericConstraints)]` [#174](https://github.com/1Password/typeshare/pull/174)
+- Added Swift config option for defining constraints on `CodableVoid` generated type [#174](https://github.com/1Password/typeshare/pull/174)
+
+## 1.10.0-beta.4
+
+Fixed a bug involving `#[typeshare(skip)]` on fields in struct variants of enums.
+
 ## 1.10.0-beta.2
 
 Fixed a bug involving type aliases.
@@ -10,7 +32,7 @@ This release brings support for multiple file generation, allowing splitting gen
 files when used in large projects. This can dramatically increase compilation speed of
 the generated files and increase maintainability.
 
-This is a *pre-release* version which may have bugs or break compatibility.
+This is a _pre-release_ version which may have bugs or break compatibility.
 
 - Multiple file output [#166](https://github.com/1Password/typeshare/pull/166)
 
