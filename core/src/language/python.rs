@@ -67,12 +67,12 @@ pub struct Python {
     /// Mappings from Rust type names to Python type names
     pub type_mappings: HashMap<String, String>,
     // HashMap<ModuleName, HashSet<Identifier>
-    imports: HashMap<String, HashSet<String>>,
+    pub imports: HashMap<String, HashSet<String>>,
     // HashMap<Identifier, Vec<DependencyIdentifiers>>
     // Used to lay out runtime references in the module
     // such that it can be read top to bottom
     // globals: HashMap<String, Vec<String>>,
-    type_variables: HashSet<String>,
+    pub type_variables: HashSet<String>,
 }
 
 impl Language for Python {
