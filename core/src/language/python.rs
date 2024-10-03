@@ -1,11 +1,11 @@
 use crate::parser::ParsedData;
-use crate::rust_types::{RustType, RustTypeFormatError, SpecialRustType};
+use crate::rust_types::{RustItem, RustType, RustTypeFormatError, SpecialRustType};
+use crate::topsort::topsort;
 use crate::{
     language::Language,
     rust_types::{RustEnum, RustEnumVariant, RustField, RustStruct, RustTypeAlias},
 };
 use once_cell::sync::Lazy;
-use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::{collections::HashMap, io::Write};
@@ -13,7 +13,6 @@ use std::{collections::HashMap, io::Write};
 use super::CrateTypes;
 
 use convert_case::{Case, Casing};
-use topological_sort::TopologicalSort;
 
 #[derive(Debug, Default)]
 pub struct Module {
@@ -22,26 +21,26 @@ pub struct Module {
     // HashMap<Identifier, Vec<DependencyIdentifiers>>
     // Used to lay out runtime references in the module
     // such that it can be read top to bottom
-    globals: HashMap<String, Vec<String>>,
+    // globals: HashMap<String, Vec<String>>,
     type_variables: HashSet<String>,
 }
 
-#[derive(Debug)]
-struct GenerationError;
+// #[derive(Debug)]
+// struct GenerationError;
 
 impl Module {
     // Idempotently insert an import
     fn add_import(&mut self, module: String, identifier: String) {
         self.imports.entry(module).or_default().insert(identifier);
     }
-    fn add_global(&mut self, identifier: String, deps: Vec<String>) {
-        match self.globals.entry(identifier) {
-            Entry::Occupied(mut e) => e.get_mut().extend_from_slice(&deps),
-            Entry::Vacant(e) => {
-                e.insert(deps);
-            }
-        }
-    }
+    // fn add_global(&mut self, identifier: String, deps: Vec<String>) {
+    //     match self.globals.entry(identifier) {
+    //         Entry::Occupied(mut e) => e.get_mut().extend_from_slice(&deps),
+    //         Entry::Vacant(e) => {
+    //             e.insert(deps);
+    //         }
+    //     }
+    // }
     fn add_type_var(&mut self, name: String) {
         self.add_import("typing".to_string(), "TypeVar".to_string());
         self.type_variables.insert(name);
@@ -59,47 +58,40 @@ impl Module {
         vars.iter().for_each(|tv| self.add_type_var(tv.clone()));
         vars
     }
-    // Rust lets you declare type aliases before the struct they point to.
-    // But in Python we need the struct to come first.
-    // So we need to topologically sort the globals so that type aliases
-    // always come _after_ the struct/enum they point to.
-    fn topologically_sorted_globals(&self) -> Result<Vec<String>, GenerationError> {
-        let mut ts: TopologicalSort<String> = TopologicalSort::new();
-        for (identifier, dependencies) in &self.globals {
-            for dependency in dependencies {
-                ts.add_dependency(dependency.clone(), identifier.clone())
-            }
-        }
-        let mut res: Vec<String> = Vec::new();
-        loop {
-            let mut level = ts.pop_all();
-            level.sort();
-            res.extend_from_slice(&level);
-            if level.is_empty() {
-                if !ts.is_empty() {
-                    return Err(GenerationError);
-                }
-                break;
-            }
-        }
-        let existing: HashSet<&String> = HashSet::from_iter(res.iter());
-        let mut missing: Vec<String> = self
-            .globals
-            .keys()
-            .filter(|&k| !existing.contains(k))
-            .cloned()
-            .collect();
-        missing.sort();
-        res.extend(missing);
-        Ok(res)
-    }
-}
-
-#[derive(Debug, Clone)]
-enum ParsedRustThing<'a> {
-    Struct(&'a RustStruct),
-    Enum(&'a RustEnum),
-    TypeAlias(&'a RustTypeAlias),
+    // // Rust lets you declare type aliases before the struct they point to.
+    // // But in Python we need the struct to come first.
+    // // So we need to topologically sort the globals so that type aliases
+    // // always come _after_ the struct/enum they point to.
+    // fn topologically_sorted_globals(&self) -> Result<Vec<String>, GenerationError> {
+    //     let mut ts: TopologicalSort<String> = TopologicalSort::new();
+    //     for (identifier, dependencies) in &self.globals {
+    //         for dependency in dependencies {
+    //             ts.add_dependency(dependency.clone(), identifier.clone())
+    //         }
+    //     }
+    //     let mut res: Vec<String> = Vec::new();
+    //     loop {
+    //         let mut level = ts.pop_all();
+    //         level.sort();
+    //         res.extend_from_slice(&level);
+    //         if level.is_empty() {
+    //             if !ts.is_empty() {
+    //                 return Err(GenerationError);
+    //             }
+    //             break;
+    //         }
+    //     }
+    //     let existing: HashSet<&String> = HashSet::from_iter(res.iter());
+    //     let mut missing: Vec<String> = self
+    //         .globals
+    //         .keys()
+    //         .filter(|&k| !existing.contains(k))
+    //         .cloned()
+    //         .collect();
+    //     missing.sort();
+    //     res.extend(missing);
+    //     Ok(res)
+    // }
 }
 
 // Collect unique type vars from an enum field
@@ -169,60 +161,32 @@ impl Language for Python {
         _imports: &CrateTypes,
         data: ParsedData,
     ) -> std::io::Result<()> {
-        let mut globals: Vec<ParsedRustThing>;
-        {
-            for alias in &data.aliases {
-                let thing = ParsedRustThing::TypeAlias(alias);
-                let identifier = self.get_identifier(thing);
-                match &alias.r#type {
-                    RustType::Generic { id, parameters: _ } => {
-                        self.module.add_global(identifier, vec![id.clone()])
-                    }
-                    RustType::Simple { id } => self.module.add_global(identifier, vec![id.clone()]),
-                    RustType::Special(_) => {}
-                }
-            }
-            for strct in &data.structs {
-                let thing = ParsedRustThing::Struct(strct);
-                let identifier = self.get_identifier(thing);
-                self.module.add_global(identifier, vec![]);
-            }
-            for enm in &data.enums {
-                let thing = ParsedRustThing::Enum(enm);
-                let identifier = self.get_identifier(thing);
-                self.module.add_global(identifier, vec![]);
-            }
-            globals = data
-                .aliases
-                .iter()
-                .map(ParsedRustThing::TypeAlias)
-                .chain(data.structs.iter().map(ParsedRustThing::Struct))
-                .chain(data.enums.iter().map(ParsedRustThing::Enum))
-                .collect();
-            let sorted_identifiers = self.module.topologically_sorted_globals().unwrap();
-            globals.sort_by(|a, b| {
-                let identifier_a = self.get_identifier(a.clone());
-                let identifier_b = self.get_identifier(b.clone());
-                let pos_a = sorted_identifiers
-                    .iter()
-                    .position(|o| o.eq(&identifier_a))
-                    .unwrap_or(0);
-                let pos_b = sorted_identifiers
-                    .iter()
-                    .position(|o| o.eq(&identifier_b))
-                    .unwrap_or(0);
-                pos_a.cmp(&pos_b)
-            });
-        }
+        self.begin_file(w, &data)?;
+
+        let ParsedData {
+            structs,
+            enums,
+            aliases,
+            ..
+        } = data;
+    
+            let mut items = aliases
+                .into_iter()
+                .map(RustItem::Alias)
+                .chain(structs.into_iter().map(RustItem::Struct))
+                .chain(enums.into_iter().map(RustItem::Enum))
+                .collect::<Vec<_>>();
+
+            topsort(&mut items);
+
         let mut body: Vec<u8> = Vec::new();
-        for thing in globals {
+        for thing in items {
             match thing {
-                ParsedRustThing::Enum(e) => self.write_enum(&mut body, e)?,
-                ParsedRustThing::Struct(rs) => self.write_struct(&mut body, rs)?,
-                ParsedRustThing::TypeAlias(t) => self.write_type_alias(&mut body, t)?,
+                RustItem::Enum(e) => self.write_enum(&mut body, &e)?,
+                RustItem::Struct(rs) => self.write_struct(&mut body, &rs)?,
+                RustItem::Alias(t) => self.write_type_alias(&mut body, &t)?,
             };
         }
-        self.begin_file(w, &data)?;
         let _ = w.write(&body)?;
         Ok(())
     }
@@ -357,7 +321,7 @@ impl Language for Python {
             r#type,
         )?;
 
-        self.write_comments(w, true, &ty.comments, 1)?;
+        self.write_comments(w, true, &ty.comments, 0)?;
 
         Ok(())
     }
@@ -382,6 +346,8 @@ impl Language for Python {
         writeln!(w, "class {}({}):", rs.id.renamed, bases,)?;
 
         self.write_comments(w, true, &rs.comments, 1)?;
+
+        handle_model_config(w, &mut self.module, rs);
 
         rs.fields
             .iter()
@@ -634,20 +600,20 @@ impl Python {
         }
     }
 
-    fn get_identifier(&self, thing: ParsedRustThing) -> String {
-        match thing {
-            ParsedRustThing::TypeAlias(alias) => alias.id.original.clone(),
-            ParsedRustThing::Struct(strct) => strct.id.original.clone(),
-            ParsedRustThing::Enum(enm) => match enm {
-                RustEnum::Unit(u) => u.id.original.clone(),
-                RustEnum::Algebraic {
-                    tag_key: _,
-                    content_key: _,
-                    shared,
-                } => shared.id.original.clone(),
-            },
-        }
-    }
+    // fn get_identifier(&self, thing: ParsedRustThing) -> String {
+    //     match thing {
+    //         ParsedRustThing::TypeAlias(alias) => alias.id.original.clone(),
+    //         ParsedRustThing::Struct(strct) => strct.id.original.clone(),
+    //         ParsedRustThing::Enum(enm) => match enm {
+    //             RustEnum::Unit(u) => u.id.original.clone(),
+    //             RustEnum::Algebraic {
+    //                 tag_key: _,
+    //                 content_key: _,
+    //                 shared,
+    //             } => shared.id.original.clone(),
+    //         },
+    //     }
+    // }
 
     fn write_field(
         &mut self,
@@ -658,16 +624,12 @@ impl Python {
         let mut python_type = self
             .format_type(&field.ty, generic_types)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        if field.ty.is_optional() || field.has_default {
+        let python_field_name = python_property_aware_rename(&field.id.original);
+        if field.ty.is_optional() {
             python_type = format!("Optional[{}]", python_type);
             self.module
                 .add_import("typing".to_string(), "Optional".to_string());
         }
-        let mut default = None;
-        if field.has_default {
-            default = Some("None".to_string())
-        }
-        let python_field_name = python_property_aware_rename(&field.id.original);
         python_type = match python_field_name == field.id.renamed {
             true => python_type,
             false => {
@@ -681,13 +643,18 @@ impl Python {
                 )
             }
         };
-        match default {
-            Some(default) => writeln!(
-                w,
-                "    {}: {} = {}",
-                python_field_name, python_type, default,
-            )?,
-            None => writeln!(w, "    {}: {}", python_field_name, python_type)?,
+        // TODO: Add support for default values other than None
+        match field.has_default && field.ty.is_optional() {
+            true => {
+                // in the future we will want to get the default value properly, something like:
+                // let default_value = get_default_value(...)
+                let default_value = "None";
+                writeln!(
+                    w,
+                    "    {python_field_name}: {python_type} = {default_value}"
+                )?
+            }
+            false => writeln!(w, "    {python_field_name}: {python_type}")?,
         }
 
         self.write_comments(w, true, &field.comments, 1)?;
@@ -747,5 +714,117 @@ fn python_property_aware_rename(name: &str) -> String {
     match PYTHON_KEYWORDS.contains(&snake_name) {
         true => format!("{}_", name),
         false => snake_name,
+    }
+}
+
+// If at least one field from within a class is changed when the serde rename is used (a.k.a the field has 2 words) then we must use aliasing and we must also use a config dict at the top level of the class.
+fn handle_model_config(w: &mut dyn Write, python_module: &mut Module, rs: &RustStruct) {
+    let visibly_renamed_field = rs.fields.iter().find(|f| {
+        let python_field_name = python_property_aware_rename(&f.id.original);
+        python_field_name != f.id.renamed
+    });
+    if visibly_renamed_field.is_some() {
+        python_module.add_import("pydantic".to_string(), "ConfigDict".to_string());
+        let _ = writeln!(w, "    model_config = ConfigDict(populate_by_name=True)\n");
+    };
+}
+
+#[cfg(test)]
+mod test {
+    use crate::rust_types::Id;
+
+    use super::*;
+    #[test]
+    fn test_python_property_aware_rename() {
+        assert_eq!(python_property_aware_rename("class"), "class_");
+        assert_eq!(python_property_aware_rename("snake_case"), "snake_case");
+    }
+
+    #[test]
+    fn test_optional_value_with_serde_default() {
+        let mut python = Python::default();
+        let mock_writer = &mut Vec::new();
+        let rust_field = RustField {
+            id: Id {
+                original: "field".to_string(),
+                renamed: "field".to_string(),
+            },
+            ty: RustType::Special(SpecialRustType::Option(Box::new(RustType::Simple {
+                id: "str".to_string(),
+            }))),
+            has_default: true,
+            comments: Default::default(),
+            decorators: Default::default(),
+        };
+        python.write_field(mock_writer, &rust_field, &[]).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(mock_writer),
+            "    field: Optional[str] = None\n"
+        );
+    }
+
+    #[test]
+    fn test_optional_value_no_serde_default() {
+        let mut python = Python::default();
+        let mock_writer = &mut Vec::new();
+        let rust_field = RustField {
+            id: Id {
+                original: "field".to_string(),
+                renamed: "field".to_string(),
+            },
+            ty: RustType::Special(SpecialRustType::Option(Box::new(RustType::Simple {
+                id: "str".to_string(),
+            }))),
+            has_default: false,
+            comments: Default::default(),
+            decorators: Default::default(),
+        };
+        python.write_field(mock_writer, &rust_field, &[]).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(mock_writer),
+            "    field: Optional[str]\n"
+        );
+    }
+
+    #[test]
+    fn test_non_optional_value_with_serde_default() {
+        // technically an invalid case at the moment, as we don't support serde default values other than None
+        // TODO: change this test if we do
+        let mut python = Python::default();
+        let mock_writer = &mut Vec::new();
+        let rust_field = RustField {
+            id: Id {
+                original: "field".to_string(),
+                renamed: "field".to_string(),
+            },
+            ty: RustType::Simple {
+                id: "str".to_string(),
+            },
+            has_default: true,
+            comments: Default::default(),
+            decorators: Default::default(),
+        };
+        python.write_field(mock_writer, &rust_field, &[]).unwrap();
+        assert_eq!(String::from_utf8_lossy(mock_writer), "    field: str\n");
+    }
+
+    #[test]
+    fn test_non_optional_value_with_no_serde_default() {
+        let mut python = Python::default();
+        let mock_writer = &mut Vec::new();
+        let rust_field = RustField {
+            id: Id {
+                original: "field".to_string(),
+                renamed: "field".to_string(),
+            },
+            ty: RustType::Simple {
+                id: "str".to_string(),
+            },
+            has_default: false,
+            comments: Default::default(),
+            decorators: Default::default(),
+        };
+        python.write_field(mock_writer, &rust_field, &[]).unwrap();
+        assert_eq!(String::from_utf8_lossy(mock_writer), "    field: str\n");
     }
 }
