@@ -111,32 +111,7 @@ impl Language for Python {
                 RustItem::Alias(t) => self.write_type_alias(&mut body, &t)?,
             };
         }
-        let mut type_var_names: Vec<String> = self.type_variables.iter().cloned().collect();
-        type_var_names.sort();
-        let type_vars: Vec<String> = type_var_names
-            .iter()
-            .map(|name| format!("{} = TypeVar(\"{}\")", name, name))
-            .collect();
-        let mut imports = vec![];
-        for (import_module, identifiers) in &self.imports {
-            let mut identifier_vec = identifiers.iter().cloned().collect::<Vec<String>>();
-            identifier_vec.sort();
-            imports.push(format!(
-                "from {} import {}",
-                import_module,
-                identifier_vec.join(", ")
-            ))
-        }
-        imports.sort();
-
-        writeln!(w, "from __future__ import annotations\n")?;
-        writeln!(w, "{}\n", imports.join("\n"))?;
-
-        match type_vars.is_empty() {
-            true => writeln!(w)?,
-            false => writeln!(w, "{}\n\n", type_vars.join("\n"))?,
-        };
-        
+        self.write_all_imports(w)?;
         w.write_all(&body)?;
         Ok(())
     }
@@ -614,6 +589,34 @@ impl Python {
             .collect();
         vars.iter().for_each(|tv| self.add_type_var(tv.clone()));
         vars
+    }
+    fn write_all_imports(&self, w: &mut dyn Write) -> std::io::Result<()>{
+        let mut type_var_names: Vec<String> = self.type_variables.iter().cloned().collect();
+        type_var_names.sort();
+        let type_vars: Vec<String> = type_var_names
+            .iter()
+            .map(|name| format!("{} = TypeVar(\"{}\")", name, name))
+            .collect();
+        let mut imports = vec![];
+        for (import_module, identifiers) in &self.imports {
+            let mut identifier_vec = identifiers.iter().cloned().collect::<Vec<String>>();
+            identifier_vec.sort();
+            imports.push(format!(
+                "from {} import {}",
+                import_module,
+                identifier_vec.join(", ")
+            ))
+        }
+        imports.sort();
+
+        writeln!(w, "from __future__ import annotations\n")?;
+        writeln!(w, "{}\n", imports.join("\n"))?;
+
+        match type_vars.is_empty() {
+            true => writeln!(w)?,
+            false => writeln!(w, "{}\n\n", type_vars.join("\n"))?,
+        };
+        Ok(())
     }
 }
 
